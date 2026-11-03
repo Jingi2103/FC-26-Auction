@@ -79,7 +79,14 @@ const initialTeams=[
 {id:'t1',name:'Real Madrid (Appu)',purse:3000,retained:0},{id:'t2',name:'FC Bayern Munich (Jobin)',purse:3000,retained:0},
 {id:'t3',name:'FC Barcelona (Jubin)',purse:3000,retained:0},{id:'t4',name:'Liverpool (Jino)',purse:3000,retained:0},
 {id:'t5',name:'Manchester City (Joseph)',purse:3000,retained:0}];
-let state={players:[],teams:initialTeams.map(t=>({...t,spent:0,bought:[]})),history:[],current:null,editId:null};
+let state={
+  players:[],
+  teams:initialTeams.map(t=>({...t,spent:0,bought:[]})),
+  history:[],
+  current:null,
+  editId:null,
+  schemaVersion:2
+};
 const $=id=>document.getElementById(id);
 function save(){
  if(!isAdmin || !cloudReady || applyingRemote) return;
@@ -100,28 +107,72 @@ function save(){
  }, 180);
 }
 async function load(){
- renderAll();
- const { data, error } = await supabaseClient
-   .from('auction_state').select('state').eq('id', AUCTION_ROW_ID).maybeSingle();
- if(error) {
-   console.error('Cloud load failed:', error);
-   alert('Could not load the shared auction. Check your Supabase URL/key and table policies. ' + error.message);
-   return;
- }
- if(data?.state?.players && data?.state?.teams) {
-   state = {...state, ...data.state, editId:null};
- } else {
-   // The first setup initializes the shared row from this browser's default state.
-   // Only a signed-in administrator can create it.
-   if(isAdmin) {
-     const { error: insertError } = await supabaseClient.from('auction_state')
-       .insert({id: AUCTION_ROW_ID, state:{...state, editId:null}});
-     if(insertError && insertError.code !== '23505') console.error('Initial cloud row could not be created:', insertError);
-   }
- }
- cloudReady = true;
- renderAll();
- subscribeToAuction();
+  renderAll();
+
+  const { data, error } = await supabaseClient
+    .from('auction_state')
+    .select('state')
+    .eq('id', AUCTION_ROW_ID)
+    .maybeSingle();
+
+  if(error) {
+    console.error('Cloud load failed:', error);
+    alert('Could not load the shared auction. Check your Supabase URL/key and table policies. ' + error.message);
+    return;
+  }
+
+  let migrated = false;
+
+  if(data?.state?.players && data?.state?.teams) {
+    state = {...state, ...data.state, editId:null};
+
+    // One-time migration: update the existing cloud record only once.
+    // Later refreshes will load the saved purse balances without resetting them.
+    if((Number(state.schemaVersion) || 0) < 2) {
+      state.teams = state.teams.map(t => ({
+        ...t,
+        purse: 3000,
+        retained: ['t1','t2','t3','t4'].includes(t.id) ? 0 : t.retained
+      }));
+      state.schemaVersion = 2;
+      migrated = true;
+    }
+  } else {
+    // Create the shared row only when an administrator is signed in.
+    if(isAdmin) {
+      state.schemaVersion = 2;
+      const { error: insertError } = await supabaseClient
+        .from('auction_state')
+        .insert({id: AUCTION_ROW_ID, state:{...state, editId:null}});
+
+      if(insertError && insertError.code !== '23505') {
+        console.error('Initial cloud row could not be created:', insertError);
+        alert('Could not initialize the shared auction: ' + insertError.message);
+      }
+    }
+  }
+
+  cloudReady = true;
+
+  // Persist the migration and wait for Supabase to confirm the update.
+  if(migrated && isAdmin) {
+    const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
+    const { error: migrationError } = await supabaseClient
+      .from('auction_state')
+      .upsert({
+        id: AUCTION_ROW_ID,
+        state: snapshot,
+        updated_at: new Date().toISOString()
+      });
+
+    if(migrationError) {
+      console.error('Team settings migration failed:', migrationError);
+      alert('Could not save the updated team settings: ' + migrationError.message);
+    }
+  }
+
+  renderAll();
+  subscribeToAuction();
 }
 function subscribeToAuction(){
  if(auctionChannel) supabaseClient.removeChannel(auctionChannel);
