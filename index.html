@@ -161,9 +161,14 @@ async function load(){
     }
 
     let migrated = false;
+    let repairedCurrent = false;
 
     if(data?.state?.players && data?.state?.teams) {
       state = {...state, ...data.state, editId:null};
+      if(state.current && !state.players.some(p=>String(p.id)===String(state.current)&&status(p)==='available')) {
+        state.current = null;
+        repairedCurrent = true;
+      }
 
       // Version 3: enforce the requested team setup exactly once in the cloud.
       // This also upgrades databases that were already marked as version 2.
@@ -202,7 +207,7 @@ async function load(){
 
     // Persist and verify the one-time migration before enabling normal saves
     // or subscribing to realtime updates.
-    if(migrated && isAdmin) {
+    if((migrated || repairedCurrent) && isAdmin) {
       const previousVersion = Number(state.schemaVersion) || 0;
       const snapshot = JSON.parse(JSON.stringify({
         ...state,
@@ -263,6 +268,7 @@ function subscribeToAuction(){
      if(remote?.players && remote?.teams) {
        applyingRemote = true;
        state = {...state, ...remote, editId:null};
+       currentAuctionPlayer();
        renderAll();
        applyingRemote = false;
      }
@@ -285,6 +291,12 @@ function maxSlots(t){return 20-squad(t)}
 function reserve(t){return needMin(t)*18}
 function maxBid(t){return Math.max(0,t.purse-reserve(t))}
 function available(tier){return state.players.filter(p=>p.tier===tier&&status(p)==='available')}
+function currentAuctionPlayer(){
+  if(!state.current) return null;
+  const player=state.players.find(p=>String(p.id)===String(state.current)&&status(p)==='available');
+  if(!player) state.current=null; // Remove a stale pointer left by an older/incomplete auction state.
+  return player||null;
+}
 function setView(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='players')renderPlayers();if(v==='teams')renderTeams();if(v==='history')renderHistory()}
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
 function renderDashboard(){
@@ -306,15 +318,17 @@ $('playerRows').innerHTML=arr.map(p=>{let t=state.teams.find(x=>x.id===p.teamId)
 function renderHistory(){$('historyRows').innerHTML=state.history.map((h,i)=>`<tr><td>${i+1}</td><td><b>${esc(h.name)}</b></td><td>${esc(h.position||'—')}</td><td>${h.tier}</td><td>${h.result.toUpperCase()}</td><td>${esc(h.team||'—')}</td><td>${h.price||'—'}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No auction activity yet.</td></tr>'}
 function renderAll(){renderDashboard();renderTeamOptions();renderQuick();renderPlayers();renderTeams();renderHistory();updateTierRemaining();syncStage()}
 function syncStage(){
- let p=state.current?state.players.find(x=>x.id===state.current):null;
+ let p=currentAuctionPlayer();
  if(p){$('drawTier').textContent=`${p.tier} TIER · PLAYER REVEALED`;$('drawName').textContent=p.name;$('drawPosition').textContent=(p.position||'POSITION').toUpperCase();$('drawHint').textContent='Player drawn randomly from the available '+p.tier+'-tier pool.';$('portrait').innerHTML=p.photo?`<img src="${esc(p.photo)}" alt="${esc(p.name)}" onerror="this.parentElement.innerHTML='⚽'">`:'⚽';$('auctionStatus').textContent='PLAYER ON THE BLOCK';}
  else {$('drawTier').textContent='SELECT A TIER';$('drawName').textContent='PLAYER NAME';$('drawPosition').textContent='POSITION';$('drawHint').textContent='Draw the next player when ready.';$('portrait').innerHTML='⚽';$('auctionStatus').textContent='READY TO DRAW';}
- $('drawBtn').disabled=!isAdmin||!!state.current;
+ $('drawBtn').textContent=p?'DRAW NEXT PLAYER':'🎲 DRAW NEXT PLAYER';
+ $('drawBtn').disabled=!isAdmin||!cloudReady||!!p;
+ $('drawBtn').title=!isAdmin?'Sign in as administrator to draw.':!cloudReady?'Auction data is still loading from the cloud.':p?'Mark the current player SOLD or UNSOLD first.':'';
 }
-function updateTierRemaining(){let t=$('tierSelect').value;$('tierRemaining').textContent=`${available(t).length} ${t}-tier player(s) left to draw. Starting price: ${basePrices[t]}.`;if(state.current){$('drawBtn').textContent='DRAW NEXT PLAYER';}}
+function updateTierRemaining(){let t=$('tierSelect').value;$('tierRemaining').textContent=`${available(t).length} ${t}-tier player(s) left to draw. Starting price: ${basePrices[t]}.`;syncStage();}
 function draw(){
 if(!isAdmin){alert('Only the administrator can operate the auction on this device.');return}
-if(state.current){alert('Please mark the current player SOLD or UNSOLD before drawing another.');return}
+if(currentAuctionPlayer()){alert('Please mark the current player SOLD or UNSOLD before drawing another.');return}
 let t=$('tierSelect').value,list=available(t);if(!list.length){alert(`No available ${t}-tier players remain.`);return}
 let p=list[Math.floor(Math.random()*list.length)];state.current=p.id;
 $('drawTier').textContent=`${t} TIER · PLAYER REVEALED`;$('drawName').textContent=p.name;$('drawPosition').textContent=(p.position||'POSITION').toUpperCase();$('drawHint').textContent='Player drawn randomly from the available '+t+'-tier pool.';
