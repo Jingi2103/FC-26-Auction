@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FC 26 — Player Auction</title>
+<title>FC 26 — Player Auction (Cloud Save Fix)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{--bg:#080d16;--panel:#111a29;--panel2:#172338;--line:#26364f;--muted:#9aabc3;--text:#f3f7ff;--lime:#c8ff42;--blue:#69b7ff;--red:#ff647c;--gold:#ffc857}
@@ -69,6 +69,8 @@ let cloudReady = false;
 let saveTimer = null;
 let saveQueue = Promise.resolve();
 let applyingRemote = false;
+let loadInProgress = null;
+let lastLocalWriteAt = 0;
 let auctionChannel = null;
 
 // Admin access is authenticated by Supabase Auth; never put a private/service key here.
@@ -91,34 +93,52 @@ let state={
   schemaVersion:3
 };
 const $=id=>document.getElementById(id);
-function save(){
-  if(!isAdmin || !cloudReady || applyingRemote) return;
+async function save(){
+  if(!isAdmin){
+    alert('Please sign in as administrator before saving auction changes.');
+    return false;
+  }
+  if(!cloudReady){
+    alert('The shared auction is still loading. Please wait a moment and try again.');
+    return false;
+  }
+  if(applyingRemote) return false;
 
+  // Render the local change immediately; persist the exact snapshot to Supabase.
   renderAll();
-  clearTimeout(saveTimer);
+  const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
+  const writeAt = Date.now();
+  lastLocalWriteAt = writeAt;
 
-  // Capture each change after the short debounce, then serialize cloud writes.
-  saveTimer = setTimeout(() => {
-    const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
+  saveQueue = saveQueue.then(async () => {
+    const { data, error } = await supabaseClient
+      .from('auction_state')
+      .upsert({
+        id: AUCTION_ROW_ID,
+        state: snapshot,
+        updated_at: new Date().toISOString()
+      })
+      .select('id,state')
+      .single();
 
-    saveQueue = saveQueue.then(async () => {
-      const { error } = await supabaseClient
-        .from('auction_state')
-        .upsert({
-          id: AUCTION_ROW_ID,
-          state: snapshot,
-          updated_at: new Date().toISOString()
-        });
+    if(error) throw error;
+    if(!data || Number(data.id) !== AUCTION_ROW_ID) {
+      throw new Error('Supabase did not confirm that the auction state was saved.');
+    }
+    return true;
+  });
 
-      if(error) {
-        console.error('Cloud save failed:', error);
-        alert('Could not save to the shared auction database: ' + error.message);
-      }
-    }).catch(err => {
-      console.error('Cloud save queue failed:', err);
-      alert('Cloud save failed. Check the browser console and Supabase permissions.');
-    });
-  }, 180);
+  try {
+    await saveQueue;
+    console.info('Auction state saved and confirmed by Supabase.');
+    return true;
+  } catch(err) {
+    console.error('Cloud save failed:', err);
+    alert('Your change is visible on this screen but was NOT confirmed in the cloud. It may disappear after refresh. Supabase error: ' + (err.message || err));
+    // Keep the queue usable for the next attempt.
+    saveQueue = Promise.resolve();
+    return false;
+  }
 }
 async function load(){
   // Prevent overlapping initial loads from racing and overwriting each other.
@@ -238,6 +258,8 @@ function subscribeToAuction(){
      event:'*', schema:'public', table:'auction_state', filter:'id=eq.1'
    }, payload => {
      const remote = payload.new?.state;
+     const eventTime = payload.new?.updated_at ? Date.parse(payload.new.updated_at) : 0;
+     if(eventTime && eventTime <= lastLocalWriteAt) return;
      if(remote?.players && remote?.teams) {
        applyingRemote = true;
        state = {...state, ...remote, editId:null};
@@ -322,16 +344,25 @@ function openAdd(p){if(!isAdmin)return;state.editId=p?.id||null;$('modalTitle').
 function closeAdd(){$('addModal').classList.remove('show');state.editId=null}
 function editPlayer(id){if(!isAdmin)return;let p=state.players.find(x=>x.id===id);if(p)openAdd(p)}
 function deletePlayer(id){if(!isAdmin)return;let p=state.players.find(x=>x.id===id);if(!p)return;if(status(p)==='sold'){alert('A sold player cannot be deleted. Undo the sale first.');return}if(!confirm('Delete '+p.name+' from the player pool?'))return;state.players=state.players.filter(x=>x.id!==id);save()}
-function savePlayer(){if(!isAdmin)return;let name=$('pName').value.trim(),position=$('pPosition').value.trim(),tier=$('pTier').value,photo=$('pPhoto').value.trim();if(!name){alert('Enter a player name.');return}
-if(state.editId){let p=state.players.find(x=>x.id===state.editId);Object.assign(p,{name,position,tier,photo})}else state.players.push({id:'p'+Date.now()+Math.random().toString(16).slice(2),name,position,tier,photo,status:'available'});
-closeAdd();save()}
+async function savePlayer(){
+ if(!isAdmin){alert('Please sign in as administrator.');return}
+ let name=$('pName').value.trim(),position=$('pPosition').value.trim(),tier=$('pTier').value,photo=$('pPhoto').value.trim();
+ if(!name){alert('Enter a player name.');return}
+ if(!cloudReady){alert('Auction data is still loading from the cloud. Please wait until it finishes, then save again.');return}
+ const previousPlayers=JSON.parse(JSON.stringify(state.players));
+ if(state.editId){let p=state.players.find(x=>x.id===state.editId);if(!p){alert('This player could not be found. Refresh the player list and try again.');return}Object.assign(p,{name,position,tier,photo})}
+ else state.players.push({id:'p'+Date.now()+Math.random().toString(16).slice(2),name,position,tier,photo,status:'available'});
+ const saved=await save();
+ if(saved) closeAdd();
+ else {state.players=previousPlayers;renderAll();}
+}
 $('savePlayer').onclick=savePlayer;
 function parseRows(rows){let added=0;rows.forEach(r=>{let norm={};Object.keys(r).forEach(k=>norm[String(k).trim().toLowerCase()]=r[k]);let name=norm.player??norm.name??norm['player name'];let pos=norm.position??norm.pos;let tier=String(norm.tier??'').trim().toUpperCase().replace(' TIER','');if(!name||!tiers.includes(tier))return;state.players.push({id:'p'+Date.now()+Math.random().toString(16).slice(2),name:String(name).trim(),position:String(pos??'').trim(),tier,photo:String(norm.photo??norm['photo url']??norm.image??'').trim(),status:'available'});added++});return added}
-$('fileInput').addEventListener('change',async e=>{if(!isAdmin){e.target.value='';return}let f=e.target.files[0];if(!f)return;try{let rows;if(f.name.toLowerCase().endsWith('.csv')){let txt=await f.text();rows=csvParse(txt)}else{if(!window.XLSX)throw Error('Excel reader did not load. Try CSV instead.');let wb=XLSX.read(await f.arrayBuffer(),{type:'array'});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]])}let n=parseRows(rows);save();alert(`${n} player(s) imported. Check the Players tab.`)}catch(err){alert('Could not import file: '+err.message)}e.target.value=''});
+$('fileInput').addEventListener('change',async e=>{if(!isAdmin){e.target.value='';return}let f=e.target.files[0];if(!f)return;try{let rows;if(f.name.toLowerCase().endsWith('.csv')){let txt=await f.text();rows=csvParse(txt)}else{if(!window.XLSX)throw Error('Excel reader did not load. Try CSV instead.');let wb=XLSX.read(await f.arrayBuffer(),{type:'array'});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]])}let n=parseRows(rows);let saved=await save();if(saved)alert(`${n} player(s) imported and saved to the shared database. Check the Players tab.`);else alert('Import was not saved to the cloud. Please check the Supabase error and try again.')}catch(err){alert('Could not import file: '+err.message)}e.target.value=''});
 function csvParse(text){let lines=text.split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return[];let parse=line=>{let out=[],cur='',q=false;for(let i=0;i<line.length;i++){let c=line[i];if(c==='"'&&line[i+1]==='"'){cur+='"';i++}else if(c==='"')q=!q;else if(c===','&&!q){out.push(cur);cur=''}else cur+=c}out.push(cur);return out};let h=parse(lines.shift());return lines.map(l=>{let a=parse(l),o={};h.forEach((k,i)=>o[k]=a[i]??'');return o})}
 function downloadTemplate(){let csv='Player,Position,Tier,Photo\nExample Player,CAM,A,https://example.com/player.jpg\n';download('fc26_player_template.csv',csv,'text/csv')}
 function exportBackup(){download('fc26_auction_backup.json',JSON.stringify(state,null,2),'application/json')}
-$('restoreInput').addEventListener('change',async e=>{let f=e.target.files[0];if(!f)return;try{let x=JSON.parse(await f.text());if(!x.players||!x.teams)throw Error('Invalid snapshot file');state={...x,editId:null};renderAll();save();alert('Auction snapshot loaded. It will be shared with all connected devices after the cloud save completes.')}catch(err){alert('Could not load snapshot: '+err.message)}e.target.value=''});
+$('restoreInput').addEventListener('change',async e=>{let f=e.target.files[0];if(!f)return;try{let x=JSON.parse(await f.text());if(!x.players||!x.teams)throw Error('Invalid snapshot file');state={...x,editId:null};renderAll();let saved=await save();if(saved)alert('Auction snapshot saved and confirmed in the shared database.');else alert('Snapshot was loaded locally but could not be confirmed in the cloud.')}catch(err){alert('Could not load snapshot: '+err.message)}e.target.value=''});
 function exportHistory(){let rows=[['Player','Position','Tier','Result','Team','Price'],...state.history.map(h=>[h.name,h.position,h.tier,h.result,h.team,h.price])];download('fc26_auction_history.csv',rows.map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\n'),'text/csv')}
 function download(name,content,type){let a=document.createElement('a'),url=URL.createObjectURL(new Blob([content],{type}));a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
 // Inline HTML actions need global functions when deployed as a classic script.
