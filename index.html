@@ -76,103 +76,160 @@ let isAdmin = false;
 let adminSession = null;
 const tiers=['A','B','C','D','E'], basePrices={A:100,B:75,C:50,D:30,E:18};
 const initialTeams=[
-{id:'t1',name:'Real Madrid (Appu)',purse:3000,retained:0},{id:'t2',name:'FC Bayern Munich (Jobin)',purse:3000,retained:0},
-{id:'t3',name:'FC Barcelona (Jubin)',purse:3000,retained:0},{id:'t4',name:'Liverpool (Jino)',purse:3000,retained:0},
-{id:'t5',name:'Manchester City (Joseph)',purse:3000,retained:0}];
+{id:'t1',name:'Real Madrid (Appu)',purse:3000,retained:0},
+{id:'t2',name:'FC Bayern Munich (Jobin)',purse:3000,retained:0},
+{id:'t3',name:'FC Barcelona (Jubin)',purse:3000,retained:0},
+{id:'t4',name:'Liverpool (Jino)',purse:3000,retained:0},
+{id:'t5',name:'Manchester City (Joseph)',purse:3000,retained:0}
+];
 let state={
   players:[],
   teams:initialTeams.map(t=>({...t,spent:0,bought:[]})),
   history:[],
   current:null,
   editId:null,
-  schemaVersion:2
+  schemaVersion:3
 };
 const $=id=>document.getElementById(id);
 function save(){
- if(!isAdmin || !cloudReady || applyingRemote) return;
- renderAll();
- clearTimeout(saveTimer);
- // Debounce rapid UI operations, then serialize writes so updates do not overtake each other.
- saveTimer = setTimeout(() => {
-   const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
-   saveQueue = saveQueue.then(async () => {
-     const { error } = await supabaseClient
-       .from('auction_state')
-       .upsert({ id: AUCTION_ROW_ID, state: snapshot, updated_at: new Date().toISOString() });
-     if(error) {
-       console.error('Cloud save failed:', error);
-       alert('Could not save to the shared auction database: ' + error.message);
-     }
-   }).catch(err => console.error('Cloud save queue failed:', err));
- }, 180);
+  if(!isAdmin || !cloudReady || applyingRemote) return;
+
+  renderAll();
+  clearTimeout(saveTimer);
+
+  // Capture each change after the short debounce, then serialize cloud writes.
+  saveTimer = setTimeout(() => {
+    const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
+
+    saveQueue = saveQueue.then(async () => {
+      const { error } = await supabaseClient
+        .from('auction_state')
+        .upsert({
+          id: AUCTION_ROW_ID,
+          state: snapshot,
+          updated_at: new Date().toISOString()
+        });
+
+      if(error) {
+        console.error('Cloud save failed:', error);
+        alert('Could not save to the shared auction database: ' + error.message);
+      }
+    }).catch(err => {
+      console.error('Cloud save queue failed:', err);
+      alert('Cloud save failed. Check the browser console and Supabase permissions.');
+    });
+  }, 180);
 }
 async function load(){
-  renderAll();
+  // Prevent overlapping initial loads from racing and overwriting each other.
+  if(loadInProgress) return loadInProgress;
 
-  const { data, error } = await supabaseClient
-    .from('auction_state')
-    .select('state')
-    .eq('id', AUCTION_ROW_ID)
-    .maybeSingle();
+  loadInProgress = (async () => {
+    cloudReady = false;
+    renderAll();
 
-  if(error) {
-    console.error('Cloud load failed:', error);
-    alert('Could not load the shared auction. Check your Supabase URL/key and table policies. ' + error.message);
-    return;
-  }
+    const { data, error } = await supabaseClient
+      .from('auction_state')
+      .select('state')
+      .eq('id', AUCTION_ROW_ID)
+      .maybeSingle();
 
-  let migrated = false;
-
-  if(data?.state?.players && data?.state?.teams) {
-    state = {...state, ...data.state, editId:null};
-
-    // One-time migration: update the existing cloud record only once.
-    // Later refreshes will load the saved purse balances without resetting them.
-    if((Number(state.schemaVersion) || 0) < 2) {
-      state.teams = state.teams.map(t => ({
-        ...t,
-        purse: 3000,
-        retained: ['t1','t2','t3','t4'].includes(t.id) ? 0 : t.retained
-      }));
-      state.schemaVersion = 2;
-      migrated = true;
+    if(error) {
+      console.error('Cloud load failed:', error);
+      alert('Could not load the shared auction. Check your Supabase URL/key and table policies. ' + error.message);
+      return;
     }
-  } else {
-    // Create the shared row only when an administrator is signed in.
-    if(isAdmin) {
-      state.schemaVersion = 2;
-      const { error: insertError } = await supabaseClient
-        .from('auction_state')
-        .insert({id: AUCTION_ROW_ID, state:{...state, editId:null}});
 
-      if(insertError && insertError.code !== '23505') {
-        console.error('Initial cloud row could not be created:', insertError);
-        alert('Could not initialize the shared auction: ' + insertError.message);
+    let migrated = false;
+
+    if(data?.state?.players && data?.state?.teams) {
+      state = {...state, ...data.state, editId:null};
+
+      // Version 3: enforce the requested team setup exactly once in the cloud.
+      // This also upgrades databases that were already marked as version 2.
+      if((Number(state.schemaVersion) || 0) < 3) {
+        state.teams = state.teams.map((team, index) => ({
+          ...team,
+          purse: 3000,
+          retained: index < 4 ? 0 : (Number(team.retained) || 0)
+        }));
+
+        migrated = true;
+      }
+    } else {
+      // Create the shared row only when an administrator is signed in.
+      if(isAdmin) {
+        state.schemaVersion = 3;
+        const initialSnapshot = JSON.parse(
+          JSON.stringify({...state, editId:null})
+        );
+
+        const { error: insertError } = await supabaseClient
+          .from('auction_state')
+          .insert({
+            id: AUCTION_ROW_ID,
+            state: initialSnapshot,
+            updated_at: new Date().toISOString()
+          });
+
+        if(insertError && insertError.code !== '23505') {
+          console.error('Initial cloud row could not be created:', insertError);
+          alert('Could not initialize the shared auction: ' + insertError.message);
+          return;
+        }
       }
     }
-  }
 
-  cloudReady = true;
+    // Persist and verify the one-time migration before enabling normal saves
+    // or subscribing to realtime updates.
+    if(migrated && isAdmin) {
+      const previousVersion = Number(state.schemaVersion) || 0;
+      const snapshot = JSON.parse(JSON.stringify({
+        ...state,
+        schemaVersion: 3,
+        editId: null
+      }));
 
-  // Persist the migration and wait for Supabase to confirm the update.
-  if(migrated && isAdmin) {
-    const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
-    const { error: migrationError } = await supabaseClient
-      .from('auction_state')
-      .upsert({
-        id: AUCTION_ROW_ID,
-        state: snapshot,
-        updated_at: new Date().toISOString()
-      });
+      const { data: savedRows, error: migrationError } = await supabaseClient
+        .from('auction_state')
+        .upsert({
+          id: AUCTION_ROW_ID,
+          state: snapshot,
+          updated_at: new Date().toISOString()
+        })
+        .select('state');
 
-    if(migrationError) {
-      console.error('Team settings migration failed:', migrationError);
-      alert('Could not save the updated team settings: ' + migrationError.message);
+      if(migrationError) {
+        console.error('Team settings migration failed:', migrationError);
+        alert(
+          'The team settings could not be saved to Supabase. ' +
+          'This is usually caused by a Row Level Security (RLS) policy. ' +
+          'Supabase says: ' + migrationError.message
+        );
+        state.schemaVersion = previousVersion;
+      } else if(!savedRows || !savedRows.length) {
+        console.error('Migration write returned no saved row.');
+        alert(
+          'Supabase did not confirm the team settings update. ' +
+          'Check the auction_state table UPDATE/INSERT policies.'
+        );
+        state.schemaVersion = previousVersion;
+      } else {
+        state.schemaVersion = 3;
+        console.info('FC 26 team settings migration v3 saved to Supabase.');
+      }
     }
-  }
 
-  renderAll();
-  subscribeToAuction();
+    cloudReady = true;
+    renderAll();
+    subscribeToAuction();
+  })();
+
+  try {
+    await loadInProgress;
+  } finally {
+    loadInProgress = null;
+  }
 }
 function subscribeToAuction(){
  if(auctionChannel) supabaseClient.removeChannel(auctionChannel);
