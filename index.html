@@ -25,7 +25,7 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 <div class="heading"><div><div class="eyebrow">Control centre</div><h2>Auction overview</h2><div class="muted">105-player pool • 5 teams • 88 maximum auction slots</div></div><div class="actions"><button class="admin-only" onclick="document.getElementById('fileInput').click()">Import Excel / CSV</button><button class="secondary" onclick="downloadTemplate()">Download template</button><input id="fileInput" type="file" accept=".xlsx,.xls,.csv" hidden></div></div>
 <div class="grid" id="stats"></div>
 <div class="layout"><div class="panel"><h3>Player pool by tier</h3><div class="tierbars" id="tierBars"></div></div><div class="panel"><h3>Team purse overview</h3><div class="teamlist" id="dashTeams"></div></div></div>
-<div class="panel" style="margin-top:16px"><h3>Getting started</h3><p class="muted">Administrator: import your player sheet. Required columns: <b>Player</b>, <b>Position</b>, <b>Tier</b>. Optional: <b>Photo</b> (direct image URL). You can also add players manually from the Players tab.</p><p class="help">This no-server edition saves data only in this browser. To let managers view the latest auction, export a JSON snapshot and share it with them; they can load that snapshot on their devices.</p><div class="actions"><button onclick="document.querySelector('[data-view=players]').click()">Open player database</button><button class="secondary admin-only" onclick="exportBackup()">Export auction snapshot</button><button class="secondary" onclick="document.getElementById('restoreInput').click()">Load shared snapshot</button><input id="restoreInput" type="file" accept=".json" hidden></div></div>
+<div class="panel" style="margin-top:16px"><h3>Getting started</h3><p class="muted">Administrator: import your player sheet. Required columns: <b>Player</b>, <b>Position</b>, <b>Tier</b>. Optional: <b>Photo</b> (direct image URL). You can also add players manually from the Players tab.</p><p class="help">Auction data is stored in the shared Supabase cloud database. Changes sync live to every device that has this website open.</p><div class="actions"><button onclick="document.querySelector('[data-view=players]').click()">Open player database</button><button class="secondary admin-only" onclick="exportBackup()">Export auction snapshot</button><button class="secondary" onclick="document.getElementById('restoreInput').click()">Load shared snapshot</button><input id="restoreInput" type="file" accept=".json" hidden></div></div>
 </section>
 <section id="auction" class="view">
 <div class="heading"><div><div class="eyebrow">On the stage</div><h2>Live auction</h2><div class="muted">Select a tier and draw a player at random from the remaining pool.</div></div><span class="status" id="auctionStatus">READY TO DRAW</span></div>
@@ -53,13 +53,26 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 </section>
 </main>
 <div class="modalback" id="addModal"><div class="modal"><h3 id="modalTitle">Add player</h3><div class="field"><label>Player name</label><input id="pName" placeholder="e.g. Kevin De Bruyne"></div><div class="row" style="margin-top:12px"><div class="field"><label>Position</label><input id="pPosition" placeholder="e.g. CAM"></div><div class="field"><label>Tier</label><select id="pTier"><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select></div></div><div class="field" style="margin-top:12px"><label>Photo URL (optional)</label><input id="pPhoto" placeholder="https://…"></div><p class="help">Use a direct image URL ending in an image format where possible.</p><div class="actions"><button id="savePlayer" class="admin-only">Save player</button><button class="secondary" onclick="closeAdd()">Cancel</button></div></div></div>
-<div class="modalback" id="loginModal"><div class="modal"><h3>Administrator login</h3><p class="help">Enter the admin password to unlock auction controls on this device.</p><label for="adminPassword">Admin password</label><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Enter admin password"><p id="loginError" class="auth-note"></p><div class="actions"><button id="loginBtn">Sign in</button><button class="secondary" id="loginCancel">Cancel</button></div></div></div>
+<div class="modalback" id="loginModal"><div class="modal"><h3>Administrator login</h3><p class="help">Sign in with the administrator account created in Supabase Authentication.</p><label for="adminEmail">Admin email</label><input id="adminEmail" type="email" autocomplete="username" placeholder="admin@example.com"><label for="adminPassword" style="margin-top:10px">Password</label><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Enter admin password"><p id="loginError" class="auth-note"></p><div class="actions"><button id="loginBtn">Sign in</button><button class="secondary" id="loginCancel">Cancel</button></div></div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// Change this password before publishing. This is only a front-end convenience lock,
-// NOT secure authentication: anyone inspecting the public source can discover it.
-const ADMIN_PASSWORD = "@#123Qwert.";
-const STORAGE_KEY = "fc26_player_auction_state_v1";
+// Supabase project settings: replace these with your own project URL and anon/public key.
+const SUPABASE_URL = "https://assbutucddjdnhizgwgi.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "sb_publishable_y4dWifMxDVO51yDQGR0BpQ_X0q-Q5mG";
+if (SUPABASE_URL.includes("https://assbutucddjdnhizgwgi.supabase.co/rest/v1/") || SUPABASE_ANON_KEY.includes("sb_publishable_y4dWifMxDVO51yDQGR0BpQ_X0q-Q5mG")) {
+  alert("Set SUPABASE_URL and SUPABASE_ANON_KEY in this HTML file before using the shared auction.");
+}
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const AUCTION_ROW_ID = 1;
+let cloudReady = false;
+let saveTimer = null;
+let saveQueue = Promise.resolve();
+let applyingRemote = false;
+let auctionChannel = null;
+
+// Admin access is authenticated by Supabase Auth; never put a private/service key here.
 let isAdmin = false;
+let adminSession = null;
 const tiers=['A','B','C','D','E'], basePrices={A:100,B:75,C:50,D:30,E:18};
 const initialTeams=[
 {id:'t1',name:'Team 1',purse:2295,retained:3},{id:'t2',name:'Team 2',purse:1990,retained:3},
@@ -68,19 +81,66 @@ const initialTeams=[
 let state={players:[],teams:initialTeams.map(t=>({...t,spent:0,bought:[]})),history:[],current:null,editId:null};
 const $=id=>document.getElementById(id);
 function save(){
- if(!isAdmin) return;
+ if(!isAdmin || !cloudReady || applyingRemote) return;
  renderAll();
- try { localStorage.setItem(STORAGE_KEY, JSON.stringify({...state,editId:null})); }
- catch(e) { alert('Could not save in this browser: '+e.message); }
+ clearTimeout(saveTimer);
+ // Debounce rapid UI operations, then serialize writes so updates do not overtake each other.
+ saveTimer = setTimeout(() => {
+   const snapshot = JSON.parse(JSON.stringify({...state, editId:null}));
+   saveQueue = saveQueue.then(async () => {
+     const { error } = await supabaseClient
+       .from('auction_state')
+       .upsert({ id: AUCTION_ROW_ID, state: snapshot, updated_at: new Date().toISOString() });
+     if(error) {
+       console.error('Cloud save failed:', error);
+       alert('Could not save to the shared auction database: ' + error.message);
+     }
+   }).catch(err => console.error('Cloud save queue failed:', err));
+ }, 180);
 }
-function load(){
- try { const saved=localStorage.getItem(STORAGE_KEY); if(saved){const parsed=JSON.parse(saved);if(parsed.players && parsed.teams) state={...state,...parsed,editId:null};} }
- catch(e) { console.warn('Saved auction data could not be loaded.',e); }
+async function load(){
  renderAll();
+ const { data, error } = await supabaseClient
+   .from('auction_state').select('state').eq('id', AUCTION_ROW_ID).maybeSingle();
+ if(error) {
+   console.error('Cloud load failed:', error);
+   alert('Could not load the shared auction. Check your Supabase URL/key and table policies. ' + error.message);
+   return;
+ }
+ if(data?.state?.players && data?.state?.teams) {
+   state = {...state, ...data.state, editId:null};
+ } else {
+   // The first setup initializes the shared row from this browser's default state.
+   // Only a signed-in administrator can create it.
+   if(isAdmin) {
+     const { error: insertError } = await supabaseClient.from('auction_state')
+       .insert({id: AUCTION_ROW_ID, state:{...state, editId:null}});
+     if(insertError && insertError.code !== '23505') console.error('Initial cloud row could not be created:', insertError);
+   }
+ }
+ cloudReady = true;
+ renderAll();
+ subscribeToAuction();
+}
+function subscribeToAuction(){
+ if(auctionChannel) supabaseClient.removeChannel(auctionChannel);
+ auctionChannel = supabaseClient.channel('auction-state-live')
+   .on('postgres_changes', {
+     event:'*', schema:'public', table:'auction_state', filter:'id=eq.1'
+   }, payload => {
+     const remote = payload.new?.state;
+     if(remote?.players && remote?.teams) {
+       applyingRemote = true;
+       state = {...state, ...remote, editId:null};
+       renderAll();
+       applyingRemote = false;
+     }
+   })
+   .subscribe();
 }
 function setAdminUI(){
  document.body.classList.toggle('is-admin',isAdmin);
- $('authStatus').textContent=isAdmin?'ADMIN MODE · THIS DEVICE':'Public view · read only';
+ $('authStatus').textContent=isAdmin?'ADMIN MODE · CLOUD SYNC':'Public view · live updates';
  $('loginOpen').style.display=isAdmin?'none':'inline-block';
  $('logoutBtn').style.display=isAdmin?'inline-block':'none';
  if(!isAdmin) $('addModal').classList.remove('show');
@@ -162,17 +222,34 @@ $('fileInput').addEventListener('change',async e=>{if(!isAdmin){e.target.value='
 function csvParse(text){let lines=text.split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return[];let parse=line=>{let out=[],cur='',q=false;for(let i=0;i<line.length;i++){let c=line[i];if(c==='"'&&line[i+1]==='"'){cur+='"';i++}else if(c==='"')q=!q;else if(c===','&&!q){out.push(cur);cur=''}else cur+=c}out.push(cur);return out};let h=parse(lines.shift());return lines.map(l=>{let a=parse(l),o={};h.forEach((k,i)=>o[k]=a[i]??'');return o})}
 function downloadTemplate(){let csv='Player,Position,Tier,Photo\nExample Player,CAM,A,https://example.com/player.jpg\n';download('fc26_player_template.csv',csv,'text/csv')}
 function exportBackup(){download('fc26_auction_backup.json',JSON.stringify(state,null,2),'application/json')}
-$('restoreInput').addEventListener('change',async e=>{let f=e.target.files[0];if(!f)return;try{let x=JSON.parse(await f.text());if(!x.players||!x.teams)throw Error('Invalid snapshot file');state={...x,editId:null};renderAll();localStorage.setItem(STORAGE_KEY,JSON.stringify(state));alert('Auction snapshot loaded in this browser. Managers can view it, but cannot change auction data.')}catch(err){alert('Could not load snapshot: '+err.message)}e.target.value=''});
+$('restoreInput').addEventListener('change',async e=>{let f=e.target.files[0];if(!f)return;try{let x=JSON.parse(await f.text());if(!x.players||!x.teams)throw Error('Invalid snapshot file');state={...x,editId:null};renderAll();save();alert('Auction snapshot loaded. It will be shared with all connected devices after the cloud save completes.')}catch(err){alert('Could not load snapshot: '+err.message)}e.target.value=''});
 function exportHistory(){let rows=[['Player','Position','Tier','Result','Team','Price'],...state.history.map(h=>[h.name,h.position,h.tier,h.result,h.team,h.price])];download('fc26_auction_history.csv',rows.map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\n'),'text/csv')}
 function download(name,content,type){let a=document.createElement('a'),url=URL.createObjectURL(new Blob([content],{type}));a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
-load();renderAll();
 // Inline HTML actions need global functions when deployed as a classic script.
 window.openAdd=openAdd;window.closeAdd=closeAdd;window.editPlayer=editPlayer;window.deletePlayer=deletePlayer;
 window.downloadTemplate=downloadTemplate;window.exportBackup=exportBackup;window.exportHistory=exportHistory;
 $('loginOpen').onclick=()=>{$('loginError').textContent='';$('adminPassword').value='';$('loginModal').classList.add('show')};
 $('loginCancel').onclick=()=>$('loginModal').classList.remove('show');
-$('loginBtn').onclick=()=>{if($('adminPassword').value===ADMIN_PASSWORD){isAdmin=true;$('loginModal').classList.remove('show');$('adminPassword').value='';setAdminUI();}else{$('loginError').textContent='Incorrect password. Please try again.';}};
+$('loginBtn').onclick=async()=>{
+ $('loginError').textContent='';
+ const email=$('adminEmail').value.trim(), password=$('adminPassword').value;
+ if(!email || !password){$('loginError').textContent='Enter your admin email and password.';return;}
+ const {data,error}=await supabaseClient.auth.signInWithPassword({email,password});
+ if(error){$('loginError').textContent='Sign-in failed: '+error.message;return;}
+ adminSession=data.session;isAdmin=!!data.session;
+ $('loginModal').classList.remove('show');$('adminPassword').value='';
+ setAdminUI();
+ await load();
+};
 $('adminPassword').addEventListener('keydown',e=>{if(e.key==='Enter')$('loginBtn').click()});
-$('logoutBtn').onclick=()=>{isAdmin=false;setAdminUI()};
-setAdminUI();
+$('logoutBtn').onclick=async()=>{await supabaseClient.auth.signOut();adminSession=null;isAdmin=false;setAdminUI()};
+supabaseClient.auth.getSession().then(async ({data})=>{
+ adminSession=data.session;isAdmin=!!data.session;
+ setAdminUI();
+ await load();
+});
+supabaseClient.auth.onAuthStateChange((_event,session)=>{
+ adminSession=session;isAdmin=!!session;
+ setAdminUI();
+});
 </script></body></html>
