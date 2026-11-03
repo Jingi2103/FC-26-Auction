@@ -76,9 +76,9 @@ let isAdmin = false;
 let adminSession = null;
 const tiers=['A','B','C','D','E'], basePrices={A:100,B:75,C:50,D:30,E:18};
 const initialTeams=[
-{id:'t1',name:'Team 1',purse:2295,retained:3},{id:'t2',name:'Team 2',purse:1990,retained:3},
-{id:'t3',name:'Team 3',purse:1968,retained:3},{id:'t4',name:'Team 4',purse:1978,retained:3},
-{id:'t5',name:'New Team',purse:3000,retained:0}];
+{id:'t1',name:'Real Madrid (Appu)',purse:3000,retained:0},{id:'t2',name:'FC Bayern Munich (Jobin)',purse:3000,retained:0},
+{id:'t3',name:'FC Barcelona (Jubin)',purse:3000,retained:0},{id:'t4',name:'Liverpool (Jino)',purse:3000,retained:0},
+{id:'t5',name:'Manchester City (Joseph)',purse:3000,retained:0}];
 let state={players:[],teams:initialTeams.map(t=>({...t,spent:0,bought:[]})),history:[],current:null,editId:null};
 const $=id=>document.getElementById(id);
 function save(){
