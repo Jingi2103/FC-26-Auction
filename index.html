@@ -19,7 +19,7 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 </style></head>
 <body>
 <header><div class="brand"><div class="logo">26</div><div><h1>FC 26 AUCTION</h1><small>LIVE PLAYER DRAFT • MANAGER CONSOLE</small></div></div>
-<nav><button class="tab active" data-view="dashboard">Dashboard</button><button class="tab" data-view="auction">Live Auction</button><button class="tab" data-view="players">Players</button><button class="tab" data-view="teams">Teams</button><button class="tab" data-view="history">History</button></nav><div class="row" style="max-width:310px;flex:0 1 310px"><span id="authStatus" class="help">Public view · read only</span><button id="loginOpen" class="secondary">Admin login</button><button id="logoutBtn" class="secondary" style="display:none">Sign out</button></div></header>
+<nav><button class="tab active" data-view="dashboard">Dashboard</button><button class="tab" data-view="auction">Live Auction</button><button class="tab" data-view="players">Players</button><button class="tab" data-view="teams">Teams</button><button class="tab" data-view="squads">Team Squads</button><button class="tab" data-view="history">History</button></nav><div class="row" style="max-width:310px;flex:0 1 310px"><span id="authStatus" class="help">Public view · read only</span><button id="loginOpen" class="secondary">Admin login</button><button id="logoutBtn" class="secondary" style="display:none">Sign out</button></div></header>
 <main>
 <section id="dashboard" class="view active">
 <div class="heading"><div><div class="eyebrow">Control centre</div><h2>Auction overview</h2><div class="muted">105-player pool • 5 teams • 88 maximum auction slots</div></div><div class="actions"><button class="admin-only" onclick="document.getElementById('fileInput').click()">Import Excel / CSV</button><button class="secondary" onclick="downloadTemplate()">Download template</button><input id="fileInput" type="file" accept=".xlsx,.xls,.csv" hidden></div></div>
@@ -46,6 +46,18 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 <div class="heading"><div><div class="eyebrow">Squad management</div><h2>Teams & purses</h2><div class="muted">Retained players are already included in squad counts.</div></div><button class="secondary" onclick="exportBackup()">Export backup</button></div>
 <div class="notice">Squad rules: existing teams start with 3 retained players; the new team starts with 0. Minimum squad = 18, maximum squad = 20. A team must reserve 18 points for every player still needed to reach 18.</div>
 <div class="teamgrid" id="teamCards"></div>
+</section>
+<section id="squads" class="view">
+  <div class="heading">
+    <div>
+      <div class="eyebrow">Squad management</div>
+      <h2>Team Squads</h2>
+      <div class="muted">Live team-wise list of purchased players.</div>
+    </div>
+    <button class="secondary" onclick="renderSquads()">Refresh squads</button>
+  </div>
+
+  <div class="teamgrid" id="squadCards"></div>
 </section>
 <section id="history" class="view">
 <div class="heading"><div><div class="eyebrow">Audit trail</div><h2>Auction history</h2><div class="muted">All drawn players and their final outcomes.</div></div><button class="secondary" onclick="exportHistory()">Download history CSV</button></div>
@@ -297,7 +309,7 @@ function currentAuctionPlayer(){
   if(!player) state.current=null; // Remove a stale pointer left by an older/incomplete auction state.
   return player||null;
 }
-function setView(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='players')renderPlayers();if(v==='teams')renderTeams();if(v==='history')renderHistory()}
+function setView(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='players')renderPlayers();if(v==='teams')renderTeams();if(v==='squads') renderSquads();if(v==='history')renderHistory()}
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
 function renderDashboard(){
 let sold=state.players.filter(p=>status(p)==='sold').length,unsold=state.players.filter(p=>status(p)==='unsold').length,avail=state.players.length-sold-unsold;
@@ -310,13 +322,95 @@ function renderQuick(){ $('quickTeams').innerHTML=state.teams.map(t=>`<div class
 function renderTeams(){
 $('teamCards').innerHTML=state.teams.map(t=>{let n=squad(t),pct=n/20*100;return `<div class="team"><div class="teamhead"><div><h3>${esc(t.name)}</h3><small class="muted">${t.retained} retained · ${t.bought.length} auction buys</small></div><div class="money">${t.purse.toLocaleString()} <small style="font-size:11px">pts</small></div></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row"><div><small class="muted">Squad</small><b>${n}/20</b></div><div><small class="muted">To minimum</small><b>${needMin(t)}</b></div><div><small class="muted">Reserve</small><b>${reserve(t)}</b></div></div><p class="help">${n<18?`Needs ${needMin(t)} more player(s) to reach minimum 18.`:'Minimum squad achieved.'} Maximum safe next bid: ${maxBid(t).toLocaleString()} points.</p><div class="help"><b>Players bought:</b> ${t.bought.length? t.bought.map(id=>{let p=state.players.find(x=>x.id===id);return p?esc(p.name):''}).filter(Boolean).join(', '):'None yet'}</div></div>`}).join('');
 }
+function renderSquads() {
+  const container = $('squadCards');
+
+  container.innerHTML = state.teams.map(team => {
+    const players = (team.bought || [])
+      .map(id => state.players.find(p => String(p.id) === String(id)))
+      .filter(p => p && status(p) === 'sold');
+
+    return `
+      <div class="team">
+        <div class="teamhead">
+          <div>
+            <h3>${esc(team.name)}</h3>
+            <small class="muted">
+              ${team.retained || 0} retained · ${players.length} auction purchases
+            </small>
+          </div>
+          <div class="money">
+            ${Number(team.purse).toLocaleString()}
+            <small style="font-size:11px">pts</small>
+          </div>
+        </div>
+
+        <div class="progress">
+          <i style="width:${Math.min(100, (Number(team.retained || 0) + players.length) / 20 * 100)}%"></i>
+        </div>
+
+        <div class="row" style="margin-bottom:14px">
+          <div>
+            <small class="muted">Squad size</small>
+            <b>${Number(team.retained || 0) + players.length}/20</b>
+          </div>
+          <div>
+            <small class="muted">Remaining purse</small>
+            <b>${Number(team.purse).toLocaleString()}</b>
+          </div>
+        </div>
+
+        <div class="tablewrap">
+          <table style="min-width:0">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Position</th>
+                <th>Tier</th>
+                <th>Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                players.length
+                  ? players.map(p => `
+                    <tr>
+                      <td><b>${esc(p.name)}</b></td>
+                      <td>${esc(p.position || '—')}</td>
+                      <td><span class="tiertag">${esc(p.tier)}</span></td>
+                      <td class="success"><b>${Number(p.price || 0).toLocaleString()}</b></td>
+                    </tr>
+                  `).join('')
+                  : `<tr>
+                      <td colspan="4" class="empty">
+                        No players purchased yet.
+                      </td>
+                    </tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
 function renderPlayers(){
 let q=$('searchPlayer').value.toLowerCase(),tier=$('filterTier').value,st=$('filterStatus').value;
 let arr=state.players.filter(p=>(!q||(p.name+' '+p.position).toLowerCase().includes(q))&&(!tier||p.tier===tier)&&(!st||status(p)===st));
 $('playerRows').innerHTML=arr.map(p=>{let t=state.teams.find(x=>x.id===p.teamId);return `<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.position||'—')}</td><td><span class="tiertag">${p.tier}</span></td><td>${status(p)==='available'?'<span class="success">AVAILABLE</span>':status(p)==='sold'?'<span class="success">SOLD</span>':'<span class="muted">UNSOLD</span>'}</td><td>${t?esc(t.name)+' · '+p.price:'—'}</td><td>${isAdmin?`<button class="secondary" style="padding:6px 9px" onclick="editPlayer('${p.id}')">Edit</button> <button class="danger" style="padding:6px 9px" onclick="deletePlayer('${p.id}')">Delete</button>`:''}</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">No players match this filter.</td></tr>';
 }
 function renderHistory(){$('historyRows').innerHTML=state.history.map((h,i)=>`<tr><td>${i+1}</td><td><b>${esc(h.name)}</b></td><td>${esc(h.position||'—')}</td><td>${h.tier}</td><td>${h.result.toUpperCase()}</td><td>${esc(h.team||'—')}</td><td>${h.price||'—'}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">No auction activity yet.</td></tr>'}
-function renderAll(){renderDashboard();renderTeamOptions();renderQuick();renderPlayers();renderTeams();renderHistory();updateTierRemaining();syncStage()}
+function renderAll(){
+  renderDashboard();
+  renderTeamOptions();
+  renderQuick();
+  renderPlayers();
+  renderTeams();
+  renderSquads();
+  renderHistory();
+  updateTierRemaining();
+  syncStage();
+}
 function syncStage(){
  let p=currentAuctionPlayer();
  if(p){$('drawTier').textContent=`${p.tier} TIER · PLAYER REVEALED`;$('drawName').textContent=p.name;$('drawPosition').textContent=(p.position||'POSITION').toUpperCase();$('drawHint').textContent='Player drawn randomly from the available '+p.tier+'-tier pool.';$('portrait').innerHTML=p.photo?`<img src="${esc(p.photo)}" alt="${esc(p.name)}" onerror="this.parentElement.innerHTML='⚽'">`:'⚽';$('auctionStatus').textContent='PLAYER ON THE BLOCK';}
