@@ -19,7 +19,7 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 </style></head>
 <body>
 <header><div class="brand"><div class="logo">26</div><div><h1>FC 26 AUCTION</h1><small>LIVE PLAYER DRAFT • MANAGER CONSOLE</small></div></div>
-<nav><button class="tab active" data-view="dashboard">Dashboard</button><button class="tab" data-view="auction">Live Auction</button><button class="tab" data-view="players">Players</button><button class="tab" data-view="teams">Teams</button><button class="tab" data-view="squads">Team Squads</button><button class="tab" data-view="history">History</button></nav><div class="row" style="max-width:310px;flex:0 1 310px"><span id="authStatus" class="help">Public view · read only</span><button id="loginOpen" class="secondary">Admin login</button><button id="logoutBtn" class="secondary" style="display:none">Sign out</button></div></header>
+<nav><button class="tab active" data-view="dashboard">Dashboard</button><button class="tab" data-view="auction">Live Auction</button><button class="tab" data-view="players">Players</button><button class="tab" data-view="squads">Team Squads</button><button class="tab" data-view="history">History</button></nav><div class="row" style="max-width:310px;flex:0 1 310px"><span id="authStatus" class="help">Public view · read only</span><button id="loginOpen" class="secondary">Admin login</button><button id="logoutBtn" class="secondary" style="display:none">Sign out</button></div></header>
 <main>
 <section id="dashboard" class="view active">
 <div class="heading"><div><div class="eyebrow">Control centre</div><h2>Auction overview</h2><div class="muted">105-player pool • 5 teams • 88 maximum auction slots</div></div><div class="actions"><button class="admin-only" onclick="document.getElementById('fileInput').click()">Import Excel / CSV</button><button class="secondary" onclick="downloadTemplate()">Download template</button><input id="fileInput" type="file" accept=".xlsx,.xls,.csv" hidden></div></div>
@@ -41,11 +41,6 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 <div class="heading"><div><div class="eyebrow">Player registry</div><h2>Player database</h2><div class="muted">Manage the complete player pool and their photos.</div></div><div class="actions"><button class="admin-only" onclick="openAdd()">＋ Add player</button><button class="secondary admin-only" onclick="document.getElementById('fileInput').click()">Import list</button></div></div>
 <div class="filters"><input id="searchPlayer" placeholder="Search player name or position…"><select id="filterTier"><option value="">All tiers</option><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select><select id="filterStatus"><option value="">All statuses</option><option value="available">Available</option><option value="sold">Sold</option><option value="unsold">Unsold</option></select></div>
 <div class="tablewrap"><table><thead><tr><th>Player</th><th>Position</th><th>Tier</th><th>Status</th><th>Team / Price</th><th></th></tr></thead><tbody id="playerRows"></tbody></table></div>
-</section>
-<section id="teams" class="view">
-<div class="heading"><div><div class="eyebrow">Squad management</div><h2>Teams & purses</h2><div class="muted">Retained players are already included in squad counts.</div></div><button class="secondary" onclick="exportBackup()">Export backup</button></div>
-<div class="notice">Squad rules: existing teams start with 3 retained players; the new team starts with 0. Minimum squad = 18, maximum squad = 20. A team must reserve 18 points for every player still needed to reach 18.</div>
-<div class="teamgrid" id="teamCards"></div>
 </section>
 <section id="squads" class="view">
   <div class="heading">
@@ -358,6 +353,16 @@ function renderSquads() {
             <small class="muted">Remaining purse</small>
             <b>${Number(team.purse).toLocaleString()}</b>
           </div>
+          <div class="row" style="margin-bottom:14px">
+  <div>
+    <small class="muted">Reserve</small>
+    <b>${reserve(team).toLocaleString()} pts</b>
+  </div>
+  <div>
+    <small class="muted">Maximum safe next bid</small>
+    <b class="success">${maxBid(team).toLocaleString()} pts</b>
+  </div>
+</div>
         </div>
 
         <div class="tablewrap">
