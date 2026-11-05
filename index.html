@@ -31,7 +31,7 @@ button,.button{background:var(--lime);color:#10170a;border:0;border-radius:9px;p
 <div class="heading"><div><div class="eyebrow">On the stage</div><h2>Live auction</h2><div class="muted">Select a tier and draw a player at random from the remaining pool.</div></div><span class="status" id="auctionStatus">READY TO DRAW</span></div>
 <div class="auction"><div class="stage"><div class="tierpill" id="drawTier">SELECT A TIER</div><div class="portrait" id="portrait"><span>⚽</span></div><div class="playername" id="drawName">PLAYER NAME</div><div class="position" id="drawPosition">POSITION</div><div class="hint" id="drawHint">Your next randomly selected player will appear here.</div></div>
 <div class="side">
-<div class="panel"><h3>Draw controls</h3><label for="tierSelect">Auction tier</label><select id="tierSelect"><option value="A">A Tier</option><option value="B">B Tier</option><option value="C">C Tier</option><option value="D">D Tier</option><option value="E">E Tier</option></select><div style="height:10px"></div><button id="drawBtn" class="admin-only" style="width:100%">🎲 DRAW NEXT PLAYER</button><p class="help" id="tierRemaining"></p></div>
+<div class="panel"><h3>Draw controls</h3><label for="tierSelect">Auction tier</label><select id="tierSelect"><option value="A">A Tier</option><option value="B">B Tier</option><option value="C">C Tier</option><option value="D">D Tier</option><option value="E">E Tier</option><option value="UNSOLD">Unsold</option></select><div style="height:10px"></div><button id="drawBtn" class="admin-only" style="width:100%">🎲 DRAW NEXT PLAYER</button><p class="help" id="tierRemaining"></p></div>
 <div class="panel"><h3>Mark result</h3><label for="soldTeam">Award player to</label><select id="soldTeam"></select><label for="soldPrice" style="margin-top:10px">Final sold price</label><input id="soldPrice" type="number" min="18" step="1" placeholder="Enter winning bid"><div style="height:10px"></div><div class="actions"><button id="soldBtn" class="admin-only">SOLD</button><button id="unsoldBtn" class="danger admin-only">UNSOLD</button></div><p class="help">SOLD deducts the final bid from the selected team's purse. UNSOLD sends the player to the unsold pool.</p></div>
 <div class="panel"><h3>Current team status</h3><div id="quickTeams" class="teamlist"></div></div>
 <div class="panel"><h3>Undo last result</h3><button class="secondary admin-only" style="width:100%" id="undoBtn">Undo last auction action</button></div>
@@ -302,7 +302,7 @@ function needMin(t){return Math.max(0,18-squad(t))}
 function maxSlots(t){return 20-squad(t)}
 function reserve(t){return needMin(t)*18}
 function maxBid(t){return Math.max(0,t.purse-reserve(t))}
-function available(tier){return state.players.filter(p=>p.tier===tier&&status(p)==='available')}
+function available(tier){return tier==='UNSOLD'?state.players.filter(p=>status(p)==='unsold'):state.players.filter(p=>p.tier===tier&&status(p)==='available')}
 function currentAuctionPlayer(){
   if(!state.current) return null;
   const player=state.players.find(p=>String(p.id)===String(state.current)&&status(p)==='available');
@@ -429,15 +429,15 @@ function syncStage(){
  $('drawBtn').disabled=!isAdmin||!cloudReady||!!p;
  $('drawBtn').title=!isAdmin?'Sign in as administrator to draw.':!cloudReady?'Auction data is still loading from the cloud.':p?'Mark the current player SOLD or UNSOLD first.':'';
 }
-function updateTierRemaining(){let t=$('tierSelect').value;$('tierRemaining').textContent=`${available(t).length} ${t}-tier player(s) left to draw. Starting price: ${basePrices[t]}.`;syncStage();}
+function updateTierRemaining(){let t=$('tierSelect').value;let price=t==='UNSOLD'?1:basePrices[t];$('tierRemaining').textContent=`${available(t).length} ${t==='UNSOLD'?'unsold':t+'-tier'} player(s) left to draw. Starting price: ${price}.`;syncStage();}
 function draw(){
 if(!isAdmin){alert('Only the administrator can operate the auction on this device.');return}
 if(currentAuctionPlayer()){alert('Please mark the current player SOLD or UNSOLD before drawing another.');return}
-let t=$('tierSelect').value,list=available(t);if(!list.length){alert(`No available ${t}-tier players remain.`);return}
+let t=$('tierSelect').value,list=available(t);if(!list.length){alert(`No ${t==='UNSOLD'?'unsold':t+'-tier'} players remain.`);return}
 let p=list[Math.floor(Math.random()*list.length)];state.current=p.id;
-$('drawTier').textContent=`${t} TIER · PLAYER REVEALED`;$('drawName').textContent=p.name;$('drawPosition').textContent=(p.position||'POSITION').toUpperCase();$('drawHint').textContent='Player drawn randomly from the available '+t+'-tier pool.';
+$('drawTier').textContent=t==='UNSOLD'?'UNSOLD POOL · PLAYER REVEALED':`${t} TIER · PLAYER REVEALED`;$('drawName').textContent=p.name;$('drawPosition').textContent=(p.position||'POSITION').toUpperCase();$('drawHint').textContent=t==='UNSOLD'?'Player drawn randomly from the unsold pool.':'Player drawn randomly from the available '+t+'-tier pool.';
 $('portrait').innerHTML=p.photo?`<img src="${esc(p.photo)}" alt="${esc(p.name)}" onerror="this.parentElement.innerHTML='⚽'">`:'⚽';
-$('auctionStatus').textContent='PLAYER ON THE BLOCK';$('soldPrice').value=basePrices[t];$('soldPrice').min=18;save();$('drawBtn').disabled=true;
+$('auctionStatus').textContent='PLAYER ON THE BLOCK';$('soldPrice').value=t==='UNSOLD'?1:basePrices[t];$('soldPrice').min=t==='UNSOLD'?1:18;save();$('drawBtn').disabled=true;
 }
 function finish(result){
 if(!isAdmin){alert('Only the administrator can record auction results on this device.');return}
@@ -445,7 +445,8 @@ if(!state.current){alert('Draw a player first.');return}
 let p=state.players.find(x=>x.id===state.current);
 if(result==='sold'){
 let team=state.teams.find(t=>t.id===$('soldTeam').value),price=Number($('soldPrice').value);
-if(!team||!Number.isFinite(price)||price<18){alert('Enter a valid sold price (minimum 18).');return}
+let minimumPrice=$('tierSelect').value==='UNSOLD'?1:18;
+ if(!team||!Number.isFinite(price)||price<minimumPrice){alert(`Enter a valid sold price (minimum ${minimumPrice}).`);return}
 if(squad(team)>=20){alert('This team has reached its 20-player maximum.');return}
 if(price>maxBid(team)){alert(`Bid exceeds safe maximum. ${team.name} must reserve ${reserve(team)} points to reach the minimum squad. Maximum allowed bid now: ${maxBid(team)}.`);return}
 if(price>team.purse){alert('Insufficient purse.');return}
