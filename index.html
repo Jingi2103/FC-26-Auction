@@ -305,8 +305,11 @@ function maxBid(t){return Math.max(0,t.purse-reserve(t))}
 function available(tier){return tier==='UNSOLD'?state.players.filter(p=>status(p)==='unsold'):state.players.filter(p=>p.tier===tier&&status(p)==='available')}
 function currentAuctionPlayer(){
   if(!state.current) return null;
-  const player=state.players.find(p=>String(p.id)===String(state.current)&&status(p)==='available');
-  if(!player) state.current=null; // Remove a stale pointer left by an older/incomplete auction state.
+  const player=state.players.find(p=>
+    String(p.id)===String(state.current) &&
+    (status(p)==='available'||status(p)==='unsold')
+  );
+  if(!player) state.current=null;
   return player||null;
 }
 function setView(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===v));document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.view===v));if(v==='players')renderPlayers();if(v==='teams')renderTeams();if(v==='squads') renderSquads();if(v==='history')renderHistory()}
